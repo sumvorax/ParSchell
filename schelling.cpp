@@ -22,9 +22,11 @@
 
 typedef unsigned int uint_t;
 
-void Shuffle(
-    std::default_random_engine & generator, const uint_t size, uint8_t * arr
-);
+typedef std::default_random_engine randengine_t;
+typedef std::uniform_int_distribution<int> udist_t;
+typedef std::bernoulli_distribution bdist_t;
+
+void Shuffle(randengine_t & generator, const uint_t size, uint8_t * arr);
 
 ////////////////////////////////////////////////////////////////////////////////
 //  City class
@@ -47,17 +49,16 @@ class City
         double _thresh;
 
         // unhappy houses
-        uint_t _unweight;
-        uint_t _unsize;
+        uint_t _locstate[2];
+        uint_t _totstate[2];
         uint_t * _unhappy;
 
         // for root only
-        uint_t * _partweight;
-        uint_t * _partsize;
-        uint8_t * _partrank;
+        uint_t * _partstate;
+        uint_t * _partrank;
 
         // random generator
-        std::default_random_engine _generator;
+        randengine_t _generator;
         
         //====================================================================//
         //  Get/Set methods
@@ -80,14 +81,20 @@ class City
         //  Redistribution methods
         //====================================================================//
         friend void Swap(uint8_t & first, uint8_t & second);
+        friend void Swap(uint_t & first, uint_t & second);
         friend void Shuffle(
-            std::default_random_engine & generator, const uint_t size,
+            randengine_t & generator, const uint_t size, uint_t * arr
+        );
+        friend void Shuffle(
+            randengine_t & generator, const uint_t size, uint8_t * arr
+        );
+        friend void Shuffle(
+            randengine_t & generator, const uint_t size, const uint_t * inds,
             uint8_t * arr
         );
-        friend void Shuffle(
-            std::default_random_engine & generator, const uint_t size,
-            uint_t * inds, uint8_t * arr
-        );
+
+        void LocalDistribute(void);
+        void DefaultDistribute(void);
 
         void ExchangeGhosts(void);
         void FindUnhappy(void);
@@ -139,6 +146,7 @@ inline uint_t City::GetVicinitySize(const int row, const int col) const
     r = (row < _size[0] - 1 || _border[1]);
     res += r + (r && c) + (r && (col > 0));  
 
+    //printf("p = %d, [%d, %d]: res = %d\n", _prank, row, col, res);
     return res;
 }
 
@@ -192,33 +200,42 @@ City::City(void):
     _border{0, 0},
     _houses(NULL),
     _thresh(0),
-    _unsize(0),
-    _unweight(0),
+    //_unsize(0),
+    //_unweight(0),
+    _locstate{0, 0},
+    _totstate{0, 0},
     _unhappy(NULL),
-    _partsize(NULL),
+    _partstate(NULL),
     _partrank(NULL)
 {}
 
 City::City(const uint_t size, const double thresh):
-    _thresh(thresh),
     _size{0, size},
-    _unsize(0),
-    _unweight(0),
-    _partsize(NULL),
-    _partrank(NULL),
-    _partweight(NULL)
+    _border{0, 0},
+    _thresh(thresh),
+    //_unsize(0),
+    //_unweight(0),
+    _locstate{0, 0},
+    _totstate{0, 0},
+    _partstate(NULL),
+    _partrank(NULL)
 {
     MPI_Comm_rank(MPI_COMM_WORLD, &_prank);
     MPI_Comm_size(MPI_COMM_WORLD, &_psize);
 
-    _border[0] = (_prank > 0);
-    _border[1] = (_prank < _psize - 1);
     _size[0] = _size[1] / _psize + (_prank < _size[1] % _psize);
-    _unhappy = (uint_t *)malloc(_size[1] * _size[0] * sizeof(uint_t));
-    _houses = (uint8_t *)malloc(_size[1] * GetFullHeight());
+
+    if (_size[0])
+    {
+        _border[0] = (_prank > 0);
+        if (_prank < _size[1] - 1) { _border[1] = (_prank < _psize - 1); }
+    }
+
+    _unhappy = (uint_t *)malloc(_size[0] * _size[1] * sizeof(uint_t));
+    _houses = (uint8_t *)malloc(GetFullHeight() * _size[1]);
 
     _generator.seed(int(MPI_Wtime() * 10000) ^ _prank);
-    std::uniform_int_distribution<int> distribution(0, 3);
+    udist_t distribution(0, 3);
 
     uint8_t tmp;
 
@@ -229,14 +246,14 @@ City::City(const uint_t size, const double thresh):
         SetHouse(s, (tmp > 0));
     }
     
+    // shuffle houses
     Shuffle(_generator, _size[0] * _size[1], _houses); 
     
     // only on root
     if (!_prank)
     {
-        _partrank = (uint8_t *)malloc(_psize);
-        _partsize = (uint_t *)malloc(_psize * sizeof(uint_t));
-        _partweight = (uint_t *)malloc(_psize * sizeof(uint_t));
+        _partrank = (uint_t *)malloc(_psize * sizeof(uint_t));
+        _partstate = (uint_t *)malloc(2 * _psize * sizeof(uint_t));
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -261,14 +278,9 @@ City::~City(void)
         free(_partrank);
     }
 
-    if (_partsize)
+    if (_partstate)
     {
-        free(_partsize);
-    }
-
-    if (_partweight)
-    {
-        free(_partweight);
+        free(_partstate);
     }
 
     return;
@@ -293,12 +305,38 @@ inline void Swap(uint8_t & first, uint8_t & second)
     return;
 }
 
+inline void Swap(uint_t & first, uint_t & second)
+{
+    uint_t tmp = second;
+    second = first;
+    first = tmp;
+
+    return;
+}
+
 // Fisher-Yates shuffle
 void Shuffle(
-    std::default_random_engine & generator, const uint_t size, uint8_t * arr
+    randengine_t & generator, const uint_t size, uint_t * arr
 )
 {
-    std::uniform_int_distribution<int> distribution(0, size - 1);
+    udist_t distribution(0, size - 1);
+
+    for (int q = 0; q < 3; ++q)
+    {
+        for (int s = 0; s < size; ++s)
+        {
+            Swap(arr[s], arr[distribution(generator)]);
+        }
+    }
+
+    return;
+}
+
+void Shuffle(
+    randengine_t & generator, const uint_t size, uint8_t * arr
+)
+{
+    udist_t distribution(0, size - 1);
 
     for (int q = 0; q < 3; ++q)
     {
@@ -313,11 +351,11 @@ void Shuffle(
 
 // Fisher-Yates shuffle, double addressation
 void Shuffle(
-    std::default_random_engine & generator, const uint_t size, uint_t * inds,
+    randengine_t & generator, const uint_t size, const uint_t * inds,
     uint8_t * arr
 )
 {
-    std::uniform_int_distribution<int> distribution(0, size - 1);
+    udist_t distribution(0, size - 1);
 
     for (int q = 0; q < 3; ++q)
     {
@@ -370,52 +408,66 @@ void City::ExchangeGhosts(void)
 
 void City::FindUnhappy(void)
 {
-    _unsize = 0;
-    _unweight = 0;
+    memset(_locstate, 0, 2 * sizeof(int));
 
-    uint_t vweight;
+    uint_t vicweight;
 
     for (int row = 0; row < _size[0]; ++row)
     {
         for (int col = 0; col < _size[1]; ++col)
         {
-            vweight = 0;
+            vicweight = 0;
 
             if (row || _border[0])
             {
-                vweight += GetHouse(row - 1, col);
-                if (col) { vweight += GetHouse(row - 1, col - 1); }
+                vicweight += GetHouse(row - 1, col);
+                if (col) { vicweight += GetHouse(row - 1, col - 1); }
 
                 if (col < _size[1] - 1)
                 {
-                    vweight += GetHouse(row - 1, col + 1);
+                    vicweight += GetHouse(row - 1, col + 1);
                 }
             }
 
             if (row < _size[0] - 1 || _border[1])
             {
-                vweight += GetHouse(row + 1, col);
-                if (col) { vweight += GetHouse(row + 1, col - 1); }
+                vicweight += GetHouse(row + 1, col);
+                if (col) { vicweight += GetHouse(row + 1, col - 1); }
 
                 if (col < _size[1] - 1)
                 {
-                    vweight += GetHouse(row + 1, col + 1);
+                    vicweight += GetHouse(row + 1, col + 1);
                 }
             }
 
-            if (col) { vweight += GetHouse(row, col - 1); }
-            if (col < _size[1] - 1) { vweight += GetHouse(row, col + 1); }
+            if (col) { vicweight += GetHouse(row, col - 1); }
+            if (col < _size[1] - 1) { vicweight += GetHouse(row, col + 1); }
 
             if (
                 GetHouse(row, col)?
-                double(vweight) < (1. - _thresh) * GetVicinitySize(row, col):
-                double(vweight) > _thresh * GetVicinitySize(row, col)
+                double(vicweight) < (1. - _thresh) * GetVicinitySize(row, col):
+                double(vicweight) > _thresh * GetVicinitySize(row, col)
             )
             {
-                _unweight += GetHouse(row, col);
-                _unhappy[_unsize++] = GetFullIndex(row, col);
+                _locstate[0] += GetHouse(row, col);
+                _unhappy[(_locstate[1])++] = GetFullIndex(row, col);
             }
         }
+    }
+
+    return;
+}
+
+// put random weight with precalculated probability 
+void City::LocalDistribute(void)
+{
+    bdist_t distribution(double(_totstate[0]) / _totstate[1]);
+
+    _locstate[0] = 0;
+
+    for (int u = 0; u < _locstate[1]; ++u)
+    {
+        if (distribution(_generator)) { ++(_locstate[0]); }
     }
 
     return;
@@ -425,112 +477,95 @@ void City::RedistributeUnhappy(void)
 {
     if (_psize > 1)
     {
-        // reduce process weights
-        MPI_Reduce(
-            _prank? &_unweight: MPI_IN_PLACE, &_unweight, 1, MPI_INT, MPI_SUM,
-            0, MPI_COMM_WORLD
+        uint_t total;
+
+        // reduce process states
+        MPI_Allreduce(
+            _locstate, _totstate, 2, MPI_UNSIGNED, MPI_SUM, MPI_COMM_WORLD
         );
 
-        // gather process sizes
+        LocalDistribute();
+
+        // gather process states
         MPI_Gather(
-            &_unsize, 1, MPI_INT, _partsize, 1, MPI_INT, 0, MPI_COMM_WORLD
+            _locstate, 2, MPI_UNSIGNED, _partstate, 2, MPI_UNSIGNED, 0,
+            MPI_COMM_WORLD
         );
 
         // redistribute to processes
         if (!_prank)
         {
+            uint_t tmp;
+
             _partrank[0] = 0;
-            _partweight[0] = 0;
+            total = _partstate[0];
 
             // initialize ranks, sum-reduce sizes
             for (int p = 1; p < _psize; ++p)
             {
                 _partrank[p] = p;
-                _unsize += _partsize[p];
-                _partweight[p] = 0;
+                total += _partstate[p << 1];
             }
 
             // shuffle ranks
             Shuffle(_generator, _psize, _partrank);
 
-            std::uniform_int_distribution<int> distribution(0, _unsize - 1);
+            //printf("exsess: %d %d\n", total, _totstate[0]);
+            //fflush(stdout);
 
-            /// // randomly redistribute weights to all processes except last
-            /// for (int p = 0; p < _psize - 1 && _unweight; ++p)
-            /// {
-            ///     if (tmp = min(_partsize[_partrank[p]], _unweight))
-            ///     {
-            ///         _partweight[_partrank[p]] = distribution(_generator) % tmp;
-            ///         _unweight -= _partweight[_partrank[p]];
-            ///     }
-            /// }
+            uint_t excess = total < _totstate[0];
+            total = excess? _totstate[0] - total: total - _totstate[0];
 
-            /// // put as most as possible to last process
-            /// _partweight[_partrank[_psize - 1]]
-            ///     = min(_partsize[_partrank[_psize - 1]], _unweight);
-            /// _unweight -= _partweight[_partrank[_psize - 1]];
-              
-            /// // distribute the reminder by one to the successive processes
-            /// for (int p = 0; _unweight; --_unweight, ++p)
-            /// {
-            ///     if (p == _psize) { p -= _psize; }
+            udist_t distribution(1, 3);
 
-            ///     if (_partweight[_partrank[p]] < _partsize[_partrank[p]])
-            ///     {
-            ///         ++(_partweight[_partrank[p]]);
-            ///     }
-            /// }
-            
-            int tmpsize;
-            int tmpweight;
-            
-            // randomly redistribute weights to all processes except last
-            for (int p = 0; _unweight; ++p)
+            for (int p = 0; total; ++p)
             {
-                printf("ps[0] = %d, pw[0] = %d\n", _partsize[_partrank[0]], _partweight[_partrank[0]]);
-                printf("ps[1] = %d, pw[1] = %d\n", _partsize[_partrank[1]], _partweight[_partrank[1]]);
                 if (p == _psize) { p = 0; }
 
-                if (_unweight < 3)
+                tmp = min(
+                    distribution(_generator),
+                    _partstate[(_partrank[p] << 1) + 1]
+                    - _partstate[_partrank[p] << 1]
+                );
+
+                if (tmp)
                 {
-                    if ( _partweight[_partrank[p]] <= _partsize[_partrank[p]] - _unweight)
+                    tmp = 1 + (tmp - 1) % total;
+
+                    if (excess)
                     {
-                        _partweight[_partrank[p]] += _unweight;
-                        break;
+                        _partstate[_partrank[p] << 1] += tmp;
                     }
                     else
                     {
-                    printf("w = %d\n", _unweight);
-                        continue;
+                        _partstate[_partrank[p] << 1] -= tmp;
                     }
-                }
 
-                if (tmpsize = min(_partsize[_partrank[p]], _unweight))
-                {
-                    printf("_partsize[_partrank[%d]] = %d, tmpsize = %d, _unweight = %d\n", _partrank[p], _partsize[_partrank[p]], tmpsize, _unweight);
-                    tmpweight = ((distribution(_generator) % tmpsize) >> 1);
-                    _partweight[_partrank[p]] += tmpweight;
-                    _partsize[_partrank[p]] -= tmpweight;
-                    _unweight -= tmpweight;
+                    total -= tmp;
                 }
+                //printf("%d: tmp=%d tot=%d\n", p, tmp, total);
+                //fflush(stdout);
             }
         }
 
         // scatter redistributed weights
         MPI_Scatter(
-            _partweight, 1, MPI_INT, &_unweight, 1, MPI_INT, 0, MPI_COMM_WORLD 
+            _partstate, 2, MPI_UNSIGNED, _locstate, 2, MPI_UNSIGNED, 0,
+            MPI_COMM_WORLD
         );
     }
+    ///printf("I am %d\n", _prank);
+    ///fflush(stdout);
 
     // set ones to be redistributed to the beginning
     // zeros, zeros everywhere (else)!
-    for (int u = 0; u < _unsize; ++u)
+    for (int u = 0; u < _locstate[1]; ++u)
     {
-        _houses[_unhappy[u]] = (u < _unweight);
+        _houses[_unhappy[u]] = (u < _locstate[0]);
     }
 
     // shuffle ranks
-    Shuffle(_generator, _unsize, _unhappy, _houses);
+    Shuffle(_generator, _locstate[1], _unhappy, _houses);
 
     return;
 }
@@ -542,14 +577,12 @@ void City::FileDump(const uint_t iteration)
 {
     uint8_t tmp;
     char filename[32];
+    snprintf(filename, 32 * sizeof(char), "dump_%d_%d.ppm", _prank, iteration);
 
-    snprintf(
-        filename, sizeof(char) * 32, "dump_%d_%d.ppm", _prank, iteration
-    );
     FILE * file = fopen(filename, "wb");
 
     fprintf(file, "P2\n#\n");
-    fprintf(file, "%05d %05d\n%02d", _size[1], _size[0], 1);
+    fprintf(file, "%05d %05d\n%05d", _size[1], _size[0], 1);
 
     for (int row = 0; row < _size[0]; ++row)
     {
@@ -600,13 +633,13 @@ void City::ParallelFileDump(const uint_t iteration)
 
     for (int row = 0; row < _size[0]; ++row)
     {
-        snprintf(buffer, 32 * sizeof(char), "\n");
+        buffer[0] = '\n';
         MPI_File_write(file, buffer, 1, MPI_CHAR, &status);
 
         for (int col = 0; col < _size[1]; ++col)
         {
             tmp = GetHouse(row, col);
-            snprintf(buffer, 32 * sizeof(char), "%d ", tmp);
+            snprintf(buffer, 6 * sizeof(char), "%d ", tmp);
             MPI_File_write(file, buffer, 2, MPI_CHAR, &status);
         }
     }
@@ -629,7 +662,6 @@ void City::Iterate(const uint_t iterations)
         ExchangeGhosts();
 
         FindUnhappy();
-        //printf("%d: %d %d\n", i, _unweight, _unsize);
         RedistributeUnhappy();
 
         ParallelFileDump(i);

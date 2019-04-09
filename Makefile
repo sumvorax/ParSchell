@@ -1,6 +1,6 @@
 include Makefile.in
 
-all: clean compile run convert rm_ppm
+all: clean compile run convert
 
 rm_ppm:
 	rm -rf *.ppm
@@ -9,7 +9,7 @@ rm_png:
 	rm -rf *.png
 
 clean: rm_ppm rm_png
-	rm -rf *.out *.gif
+	rm -rf *.out *.mp4
 
 compile:
 	mpicxx -O3 schelling.cpp -o schelling.out

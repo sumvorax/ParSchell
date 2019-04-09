@@ -581,7 +581,7 @@ void City::GuessState(void)
     return;
 }
 
-// 
+// detect discrepancy
 discrepancy_t City::DetectDiscrepancy(const int * weights, uint8_t * inds)
 {
     discrepancy_t discrepancy = DISCR_ZZZ;
@@ -1041,6 +1041,7 @@ void City::FileDump(const uint_t iteration)
             fprintf(file, "%d ", tmp);
         }
     }
+    fprintf(file, "\n");
 
     fclose(file);
 
@@ -1089,6 +1090,12 @@ void City::ParallelFileDump(const uint_t iteration)
             snprintf(buffer, 6 * sizeof(char), "%d ", tmp);
             MPI_File_write(file, buffer, 2, MPI_CHAR, &status);
         }
+    }
+
+    if (_prank == _psize - 1)
+    {
+        buffer[0] = '\n';
+        MPI_File_write(file, buffer, 1, MPI_CHAR, &status);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);

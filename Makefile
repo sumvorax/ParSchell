@@ -8,14 +8,14 @@ rm_ppm:
 rm_png:
 	rm -rf *.png
 
-clean: rm_png
+clean: rm_ppm rm_png
 	rm -rf *.out *.gif
 
 compile:
 	mpicxx -O3 schelling.cpp -o schelling.out
 
 run:
-	mpirun -n $(NUM_PROC) ./schelling.out $(SIZE) $(THRESH) $(ITER)
+	mpirun -n $(PROC) ./schelling.out $(ITER) $(SIZE) $(THRESH) $(PROB) $(EMPTY)
 
 convert:
 	./convert.sh $(ITER)

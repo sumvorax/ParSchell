@@ -30,7 +30,9 @@ static const char * PrintDiscrepancy(discrepancy_t discrepancy);
 inline const uint_t & min(const uint_t & first, const uint_t & second);
 
 // nearest to zero
-inline const int & absmin(const uint_t sign, const int & first, const int & second);
+inline const int & absmin(
+    const uint_t sign, const int & first, const int & second
+);
 
 // swap
 template<typename T = uint8_t>
@@ -58,10 +60,10 @@ class City
         int _psize; 
 
         // city map 
-        uint_t _offset;
+        uint_t _offset; // global offset for parallel file write
         uint_t _size[2]; // height, width
         uint_t _border[2]; // upper, lower
-        uint_t _weights[3]; // night watch, wasteland, white walkers, total
+        uint_t _weights[3]; // night watch, wasteland, white walkers
         uint8_t * _houses; 
 
         // threshold of intolerance
@@ -74,7 +76,7 @@ class City
         // moving houses
         uint_t _locstate[4]; // night watch, wasteland, white walkers, total
         uint_t _totstate[3]; // night watch, wasteland, white walkers
-        uint_t * _moving;
+        uint_t * _moving; // indices of moving householders
 
         // for root only
         uint_t * _partrank;
@@ -119,7 +121,7 @@ class City
         );
 
         void ExchangeGhosts(void);
-        int Decise(const int row, const int col, const uint_t * vicstate);
+        int Decise(const int row, const int col, const uint_t * vicstate) const;
         void FindMoving(void);
         void GuessState(void);
         discrepancy_t DetectDiscrepancy(const int * weights, uint8_t * inds);

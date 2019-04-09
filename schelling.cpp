@@ -6,7 +6,7 @@
 
 ********************************************************************************
 
-  * Compile with: 'mpicxx schelling.cpp -o schelling.out'
+  * Compile with: 'mpicxx -std=c++11 schelling.cpp -o schelling.out'
   * Run with: 'mpirun -n <proc> ./schelling.out \
         <iter> <size> <thresh> <prob> <empty>'
 
@@ -355,7 +355,9 @@ void City::ExchangeGhosts(void)
 }
 
 // decise the necessity of relocation
-inline int City::Decise(const int row, const int col, const uint_t * vicstate)
+inline int City::Decise(
+    const int row, const int col, const uint_t * vicstate
+) const
 {
     return GetHouse(row, col) == 1 || vicstate[2 - GetHouse(row, col)]
         > _thresh * GetVicinitySize(row, col);

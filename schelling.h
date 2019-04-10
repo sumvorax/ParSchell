@@ -60,7 +60,6 @@ class City
         int _psize; 
 
         // city map 
-        uint_t _offset; // global offset for parallel file write
         uint_t _size[2]; // height, width
         uint_t _border[2]; // upper, lower
         uint_t _weights[3]; // night watch, wasteland, white walkers
@@ -82,6 +81,10 @@ class City
         uint_t * _partrank;
         uint_t * _partstate;
 
+        // I/O
+        uint_t _offset; // global offset for parallel file write
+        char * _buffer;
+
         // random generator
         randgen_t _generator;
         
@@ -90,7 +93,7 @@ class City
         //====================================================================//
         uint_t GetFullHeight(void) const;
         uint_t GetFullIndex(const int row, const int col) const;
-        uint_t GetVicinitySize(const int row, const int col) const;
+        uint8_t GetVicinitySize(const int row, const int col) const;
         void GetState(uint_t * weights);
         
         uint8_t * GetFirstRow(void);
@@ -121,7 +124,10 @@ class City
         );
 
         void ExchangeGhosts(void);
-        int Decise(const int row, const int col, const uint_t * vicstate) const;
+        int Decise(
+            const int row, const int col, const uint8_t vicsize,
+            const uint_t * vicstate
+        ) const;
         void FindMoving(void);
         void GuessState(void);
         discrepancy_t DetectDiscrepancy(const int * weights, uint8_t * inds);
@@ -149,7 +155,7 @@ class City
         //====================================================================//
         //  Iterate
         //====================================================================//
-        void Iterate(const uint_t iters);
-        void CheckState(void);
+        void Iterate(const uint_t iterations);
+        void CheckState(const uint_t iteration);
 };
 

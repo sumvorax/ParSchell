@@ -119,19 +119,13 @@ inline uint_t City::GetFullIndex(const int row, const int col) const
     return (row + _border[0]) * _size[1] + col;
 }
 
-inline uint_t City::GetVicinitySize(const int row, const int col) const
+inline uint8_t City::GetVicinitySize(const int row, const int col) const
 { 
-    uint_t r = (row > 0 || _border[0]);  
-    uint_t c = (col > 0);
-    uint_t res = r + c + (r && c);
+    uint8_t r = (row > 0 || _border[0]) + (row < _size[0] - 1 || _border[1]);
+    uint8_t c = (col > 0) + (col < _size[1] - 1);
+    uint8_t tot = r + c;
 
-    c = (col < _size[1] - 1);
-    res += c + (r && c);
-
-    r = (row < _size[0] - 1 || _border[1]);
-    res += r + (r && c) + (r && (col > 0));  
-
-    return res;
+    return tot? (1 << (tot - 1)) + ((tot >> 1) & (r && c)): 0;
 }
 
 inline uint8_t * City::GetFirstRow(void)
@@ -210,7 +204,6 @@ void City::GetState(uint_t * weights)
 City::City(void):
     _prank(0),
     _psize(0),
-    _offset(0),
     _size{0, 0},
     _border{0, 0},
     _weights{0, 0, 0},
@@ -222,7 +215,9 @@ City::City(void):
     _totstate{0, 0},
     _moving(NULL),
     _partstate(NULL),
-    _partrank(NULL)
+    _partrank(NULL),
+    _offset(0),
+    _buffer(NULL)
 {}
 
 City::City(
@@ -239,7 +234,8 @@ City::City(
     _locstate{0, 0},
     _totstate{0, 0},
     _partstate(NULL),
-    _partrank(NULL)
+    _partrank(NULL),
+    _buffer(NULL)
 {
     MPI_Comm_rank(MPI_COMM_WORLD, &_prank);
     MPI_Comm_size(MPI_COMM_WORLD, &_psize);
@@ -251,14 +247,20 @@ City::City(
         _offset
             = 22 + (
                 _prank * (_size[1] / _psize) + min(_prank, _size[1] % _psize)
-            ) * (1 + 2 * _size[1]);
+            ) * 2 * _size[1];
     }
 
+    // if process has any data
     if (_size[0])
     {
         _border[0] = (_prank > 0);
+
         // in case this is the last process with data
-        if (_prank < _size[1] - 1) { _border[1] = (_prank < _psize - 1); }
+        if (_prank < _size[1] - 1)
+        {
+            _border[1] = (_prank < _psize - 1);
+            _buffer = (char *)malloc(2 * _size[1]);
+        }
     }
 
     _houses = (uint8_t *)malloc(GetFullHeight() * _size[1]);
@@ -310,6 +312,11 @@ City::~City(void)
         free(_partstate);
     }
 
+    if (_buffer)
+    {
+        free(_buffer);
+    }
+
     return;
 }
 
@@ -356,16 +363,17 @@ void City::ExchangeGhosts(void)
 
 // decise the necessity of relocation
 inline int City::Decise(
-    const int row, const int col, const uint_t * vicstate
+    const int row, const int col, const uint8_t vicsize, const uint_t * vicstate
 ) const
 {
-    return GetHouse(row, col) == 1 || vicstate[2 - GetHouse(row, col)]
-        > _thresh * GetVicinitySize(row, col);
+    return GetHouse(row, col) == 1
+        || vicstate[2 - GetHouse(row, col)] > _thresh * vicsize;
 }
 
 // determine local state
 void City::FindMoving(void)
 {
+    uint8_t vicsize;
     uint_t vicstate[3];
 
     memset(_locstate, 0, 4 * sizeof(uint_t));
@@ -374,34 +382,58 @@ void City::FindMoving(void)
     {
         for (int col = 0; col < _size[1]; ++col)
         {
+            vicsize = 0;
             memset(vicstate, 0, 3 * sizeof(uint_t));
 
             if (row || _border[0])
             {
                 AssessHouse(row - 1, col, vicstate);
-                if (col) { AssessHouse(row - 1, col - 1, vicstate); }
+                ++vicsize;
+
+                if (col)
+                {
+                    AssessHouse(row - 1, col - 1, vicstate);
+                    ++vicsize;
+                }
 
                 if (col < _size[1] - 1)
                 {
                     AssessHouse(row - 1, col + 1, vicstate);
+                    ++vicsize;
                 }
             }
 
             if (row < _size[0] - 1 || _border[1])
             {
                 AssessHouse(row + 1, col, vicstate);
-                if (col) { AssessHouse(row + 1, col - 1, vicstate); }
+                ++vicsize;
+
+                if (col)
+                {
+                    AssessHouse(row + 1, col - 1, vicstate);
+                    ++vicsize;
+                }
 
                 if (col < _size[1] - 1)
                 {
                     AssessHouse(row + 1, col + 1, vicstate);
+                    ++vicsize;
                 }
             }
 
-            if (col) { AssessHouse(row, col - 1, vicstate); }
-            if (col < _size[1] - 1) { AssessHouse(row, col + 1, vicstate); }
+            if (col)
+            {
+                AssessHouse(row, col - 1, vicstate);
+                ++vicsize;
+            }
 
-            if (Decise(row, col, vicstate))
+            if (col < _size[1] - 1)
+            {
+                AssessHouse(row, col + 1, vicstate);
+                ++vicsize;
+            }
+
+            if (Decise(row, col, vicsize, vicstate))
             {
                 AssessHouse(row, col, _locstate);
                 _moving[(_locstate[3])++] = GetFullIndex(row, col);
@@ -623,8 +655,6 @@ void City::Equilibrate(void)
                 state[inds[first]] -= ch;
                 _partstate[3 * _partrank[p] + inds[first]] -= ch;
 
-                state[inds[second]] += ch;
-
                 // skip processes till it is possible to nonzero cut
                 while (
                     !sign && !(_partstate[3 * _partrank[p] + inds[second]])
@@ -634,6 +664,7 @@ void City::Equilibrate(void)
                     if (p == _psize) { p = 0; }
                 }
 
+                state[inds[second]] += ch;
                 _partstate[3 * _partrank[p] + inds[second]] += ch;
             }
         }
@@ -733,15 +764,14 @@ void City::ParallelFileDump(const uint_t iteration)
     MPI_Barrier(MPI_COMM_WORLD);
 
     uint8_t tmp;
-    char buffer[32];
-    snprintf(buffer, 32 * sizeof(char), "dump_%d.ppm", iteration);
+    snprintf(_buffer, 64, "dump_%d.ppm", iteration);
 
     MPI_Status status;
     MPI_Offset offset = _offset * sizeof(char);
     
     MPI_File file;
     MPI_File_open(
-        MPI_COMM_WORLD, buffer, MPI_MODE_WRONLY | MPI_MODE_CREATE,
+        MPI_COMM_WORLD, _buffer, MPI_MODE_WRONLY | MPI_MODE_CREATE,
         MPI_INFO_NULL, &file
     );
     MPI_File_set_view(
@@ -750,30 +780,28 @@ void City::ParallelFileDump(const uint_t iteration)
 
     if (!_prank)
     {
-        snprintf(
-            buffer, 32 * sizeof(char),"P2\n#\n%05d %05d\n%05d", _size[1],
-            _size[1], 2
-        );
-        MPI_File_write(file, buffer, 22, MPI_CHAR, &status);
+        snprintf(_buffer, 64, "P2\n#\n%05d %05d\n%05d", _size[1], _size[1], 2);
+        MPI_File_write(file, _buffer, 22, MPI_CHAR, &status);
     }
 
     for (int row = 0; row < _size[0]; ++row)
     {
-        buffer[0] = '\n';
-        MPI_File_write(file, buffer, 1, MPI_CHAR, &status);
+        _buffer[0] = '\n';
+        _buffer[1] = GetHouse(row, 0) + '0';
 
-        for (int col = 0; col < _size[1]; ++col)
+        for (int col = 1; col < _size[1]; ++col)
         {
-            tmp = GetHouse(row, col);
-            snprintf(buffer, 6 * sizeof(char), "%d ", tmp);
-            MPI_File_write(file, buffer, 2, MPI_CHAR, &status);
+            _buffer[col << 1] = ' ';
+            _buffer[(col << 1) + 1] = GetHouse(row, col) + '0';
         }
+
+        MPI_File_write(file, _buffer, 2 * _size[1], MPI_CHAR, &status);
     }
 
     if (_prank == _psize - 1)
     {
-        buffer[0] = '\n';
-        MPI_File_write(file, buffer, 1, MPI_CHAR, &status);
+        _buffer[0] = '\n';
+        MPI_File_write(file, _buffer, 1, MPI_CHAR, &status);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -788,7 +816,7 @@ void City::ParallelFileDump(const uint_t iteration)
 ////////////////////////////////////////////////////////////////////////////////
 void City::Iterate(const uint_t iterations)
 {
-    CheckState();
+    CheckState(0);
     ParallelFileDump(0);
 
     for (int i = 1; i <= iterations; ++i)
@@ -797,7 +825,7 @@ void City::Iterate(const uint_t iterations)
         FindMoving();
         Redistribute();
 
-        CheckState();
+        CheckState(i);
         ParallelFileDump(i);
     }
 
@@ -805,7 +833,7 @@ void City::Iterate(const uint_t iterations)
 }
 
 // check state
-void City::CheckState(void)
+void City::CheckState(const uint_t iteration)
 {
     uint_t totweights[3];
 
@@ -818,8 +846,11 @@ void City::CheckState(void)
     if (!_prank)
     {
         printf(
-            "WEIGHTS: %d %d %d\n", totweights[0], totweights[1], totweights[2]
+            "%d WEIGHTS: %d %d %d\n",
+            iteration, totweights[0], totweights[1], totweights[2]
         );
+
+        fflush(stdout);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);

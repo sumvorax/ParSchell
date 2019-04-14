@@ -12,11 +12,11 @@ clean: rm_ppm rm_png
 	rm -rf *.out *.mp4
 
 compile:
-	mpicxx -O3 schelling.cpp -o schelling.out
+	mpicxx -std=c++11 -O3 schelling.cpp -o schelling.out
 
 run:
-	mpirun -n $(PROC) ./schelling.out $(ITER) $(SIZE) $(THRESH) $(PROB) $(EMPTY)
+	mpirun -n $(PROC) ./schelling.out $(ITER) $(SIZE) $(THRESH) $(FRAC) $(EMPTY)
 
 convert:
-	./convert.sh $(ITER)
+	./convert.sh 0 $(ITER)
 

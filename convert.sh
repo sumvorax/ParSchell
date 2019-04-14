@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for ((i = 0; i <= $1; ++i))
+for ((i = $1; i <= $2; ++i))
 do
     p=$(printf "%05d" $i)
     convert "dump_"$i".ppm" -quality 0 "it_${p}.png"

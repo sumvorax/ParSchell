@@ -9,7 +9,6 @@ typedef unsigned int uint_t;
 
 typedef std::default_random_engine randgen_t;
 typedef std::uniform_int_distribution<int> udist_t;
-typedef std::bernoulli_distribution bdist_t;
 typedef std::discrete_distribution<int> ddist_t;
 
 typedef enum 
@@ -68,7 +67,7 @@ class City
         // threshold of intolerance
         double _thresh;
         // probability of night watch
-        double _prob;
+        double _frac;
         // probability of wasteland
         double _empty;
 
@@ -77,11 +76,14 @@ class City
         uint_t _totstate[3]; // night watch, wasteland, white walkers
         uint_t * _moving; // indices of moving householders
 
-        // for root only
+        // shuffled process ranks (only on root)
         uint_t * _partrank;
-        uint_t * _partstate;
+        // aggregated states for each process (only on root)
+        uint_t * _partstate; // night watch, wasteland, white walkers
 
-        // I/O
+        // I/O handling
+        static const uint8_t _DUMP_HEADER_LEN;
+        static const char * _DUMP_HEADER;
         uint_t _offset; // global offset for parallel file write
         char * _buffer;
 
@@ -107,7 +109,9 @@ class City
         void SetHouse(const int row, const int col, const uint8_t house);
 
         void AssessHouse(const uint_t ind, uint_t * weights);
-        void AssessHouse(const int row, const int col, uint_t * weights);
+
+        template<typename T>
+        void AssessHouse(const int row, const int col, T * weights);
 
         //====================================================================//
         //  Redistribution methods
@@ -125,8 +129,7 @@ class City
 
         void ExchangeGhosts(void);
         int Decise(
-            const int row, const int col, const uint8_t vicsize,
-            const uint_t * vicstate
+            const int row, const int col, const uint8_t * vicstate
         ) const;
         void FindMoving(void);
         void GuessState(void);
@@ -153,9 +156,8 @@ class City
         ~City(void);
 
         //====================================================================//
-        //  Iterate
+        //  Iteration process methods
         //====================================================================//
-        void Iterate(const uint_t iterations);
         void CheckState(const uint_t iteration);
+        void Iterate(const uint_t iterations);
 };
-

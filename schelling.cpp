@@ -8,7 +8,7 @@
 
   * Compile with: 'mpicxx -std=c++11 schelling.cpp -o schelling.out'
   * Run with: 'mpirun -n <proc> ./schelling.out \
-        <iter> <size> <thresh> <prob> <empty>'
+        <iter> <size> <thresh> <frac> <empty>'
 
 *******************************************************************************/
 
@@ -21,6 +21,14 @@
 #include <random>
 #include <unistd.h>
 #include <inttypes.h>
+
+////////////////////////////////////////////////////////////////////////////////
+//  Constants
+////////////////////////////////////////////////////////////////////////////////
+static const uint8_t SHUFFLE_DEPTH = 3;
+const uint8_t City::_DUMP_HEADER_LEN = 52;
+const char * City::_DUMP_HEADER
+    = "P2\n#%05d %.5lf %.5lf %.5lf\n%05d %05d\n%05d  ";
 
 ////////////////////////////////////////////////////////////////////////////////
 //  Happy tree friends :)
@@ -77,7 +85,7 @@ void Shuffle(randgen_t & generator, const uint_t size, T * arr)
 {
     udist_t distribution(0, size - 1);
 
-    for (int q = 0; q < 3; ++q)
+    for (int d = 0; d < SHUFFLE_DEPTH; ++d)
     {
         for (int s = 0; s < size; ++s)
         {
@@ -95,7 +103,7 @@ void Shuffle(
 {
     udist_t distribution(0, size - 1);
 
-    for (int q = 0; q < 3; ++q)
+    for (int d = 0; d < SHUFFLE_DEPTH; ++d)
     {
         for (int s = 0; s < size; ++s)
         {
@@ -172,6 +180,7 @@ inline void City::SetHouse(const int row, const int col, const uint8_t house)
     return;
 }
 
+// not counting in total
 inline void City::AssessHouse(const uint_t ind, uint_t * weights)
 {
     ++(weights[GetHouse(ind)]);
@@ -179,9 +188,12 @@ inline void City::AssessHouse(const uint_t ind, uint_t * weights)
     return;
 }
 
-inline void City::AssessHouse(const int row, const int col, uint_t * weights)
+// also counting in total
+template<typename T>
+inline void City::AssessHouse(const int row, const int col, T * weights)
 {
     ++(weights[GetHouse(row, col)]);
+    ++(weights[3]);
 
     return;
 }
@@ -209,7 +221,7 @@ City::City(void):
     _weights{0, 0, 0},
     _houses(NULL),
     _thresh(0),
-    _prob(0),
+    _frac(0),
     _empty(0),
     _locstate{0, 0},
     _totstate{0, 0},
@@ -221,13 +233,13 @@ City::City(void):
 {}
 
 City::City(
-    const uint_t size, const double thresh, const double prob,
+    const uint_t size, const double thresh, const double frac,
     const double empty
 ):
     _offset(0),
     _size{0, size},
     _thresh(thresh),
-    _prob(prob),
+    _frac(frac),
     _empty(empty),
     _border{0, 0},
     _weights{0, 0, 0},
@@ -245,7 +257,7 @@ City::City(
     if (_prank)
     {
         _offset
-            = 22 + (
+            = _DUMP_HEADER_LEN + (
                 _prank * (_size[1] / _psize) + min(_prank, _size[1] % _psize)
             ) * 2 * _size[1];
     }
@@ -267,7 +279,7 @@ City::City(
     _moving = (uint_t *)malloc(_size[0] * _size[1] * sizeof(uint_t));
 
     _generator.seed(int(MPI_Wtime() * 10000) ^ _prank);
-    ddist_t distribution{_prob, _empty, 1. - _prob - _empty};
+    ddist_t distribution{_frac, _empty, 1. - _frac - _empty};
 
     // set houses randomly
     for (int s = 0; s < _size[0] * _size[1]; ++s)
@@ -363,18 +375,17 @@ void City::ExchangeGhosts(void)
 
 // decise the necessity of relocation
 inline int City::Decise(
-    const int row, const int col, const uint8_t vicsize, const uint_t * vicstate
+    const int row, const int col, const uint8_t * vicstate
 ) const
 {
     return GetHouse(row, col) == 1
-        || vicstate[2 - GetHouse(row, col)] > _thresh * vicsize;
+        || vicstate[2 - GetHouse(row, col)] > _thresh * vicstate[3];
 }
 
 // determine local state
 void City::FindMoving(void)
 {
-    uint8_t vicsize;
-    uint_t vicstate[3];
+    uint8_t vicstate[4];
 
     memset(_locstate, 0, 4 * sizeof(uint_t));
 
@@ -382,61 +393,40 @@ void City::FindMoving(void)
     {
         for (int col = 0; col < _size[1]; ++col)
         {
-            vicsize = 0;
-            memset(vicstate, 0, 3 * sizeof(uint_t));
+            memset(vicstate, 0, 4);
 
             if (row || _border[0])
             {
                 AssessHouse(row - 1, col, vicstate);
-                ++vicsize;
 
-                if (col)
-                {
-                    AssessHouse(row - 1, col - 1, vicstate);
-                    ++vicsize;
-                }
+                if (col) { AssessHouse(row - 1, col - 1, vicstate); }
 
                 if (col < _size[1] - 1)
                 {
                     AssessHouse(row - 1, col + 1, vicstate);
-                    ++vicsize;
                 }
             }
 
             if (row < _size[0] - 1 || _border[1])
             {
                 AssessHouse(row + 1, col, vicstate);
-                ++vicsize;
 
-                if (col)
-                {
-                    AssessHouse(row + 1, col - 1, vicstate);
-                    ++vicsize;
-                }
+                if (col) { AssessHouse(row + 1, col - 1, vicstate); }
 
                 if (col < _size[1] - 1)
                 {
                     AssessHouse(row + 1, col + 1, vicstate);
-                    ++vicsize;
                 }
             }
 
-            if (col)
-            {
-                AssessHouse(row, col - 1, vicstate);
-                ++vicsize;
-            }
+            if (col) { AssessHouse(row, col - 1, vicstate); }
 
-            if (col < _size[1] - 1)
-            {
-                AssessHouse(row, col + 1, vicstate);
-                ++vicsize;
-            }
+            if (col < _size[1] - 1) { AssessHouse(row, col + 1, vicstate); }
 
-            if (Decise(row, col, vicsize, vicstate))
+            if (Decise(row, col, vicstate))
             {
+                _moving[_locstate[3]] = GetFullIndex(row, col);
                 AssessHouse(row, col, _locstate);
-                _moving[(_locstate[3])++] = GetFullIndex(row, col);
             }
         }
     }
@@ -649,24 +639,19 @@ void City::Equilibrate(void)
                 ):
                 absmin(sign, chunk(_generator), state[inds[first]]);
 
-            // equilibrate states
-            if (ch) // that should always be true for ddist_t(1, 3)
+            // skip processes till it is possible to nonzero cut
+            while (!sign && _partstate[3 * _partrank[p] + inds[second]] < -ch)
             {
-                state[inds[first]] -= ch;
-                _partstate[3 * _partrank[p] + inds[first]] -= ch;
-
-                // skip processes till it is possible to nonzero cut
-                while (
-                    !sign && !(_partstate[3 * _partrank[p] + inds[second]])
-                )
-                {
-                    ++p;
-                    if (p == _psize) { p = 0; }
-                }
-
-                state[inds[second]] += ch;
-                _partstate[3 * _partrank[p] + inds[second]] += ch;
+                ++p;
+                if (p == _psize) { p = 0; }
             }
+
+            // equilibrate states
+            state[inds[first]] -= ch;
+            _partstate[3 * _partrank[p] + inds[first]] -= ch;
+
+            state[inds[second]] += ch;
+            _partstate[3 * _partrank[p] + inds[second]] += ch;
         }
     }
 
@@ -752,6 +737,7 @@ void City::FileDump(const uint_t iteration)
             fprintf(file, "%d ", tmp);
         }
     }
+
     fprintf(file, "\n");
 
     fclose(file);
@@ -780,8 +766,11 @@ void City::ParallelFileDump(const uint_t iteration)
 
     if (!_prank)
     {
-        snprintf(_buffer, 64, "P2\n#\n%05d %05d\n%05d", _size[1], _size[1], 2);
-        MPI_File_write(file, _buffer, 22, MPI_CHAR, &status);
+        snprintf(
+            _buffer, _DUMP_HEADER_LEN, _DUMP_HEADER,
+            iteration, _thresh, _frac, _empty, _size[1], _size[1], 2
+        );
+        MPI_File_write(file, _buffer, _DUMP_HEADER_LEN, MPI_CHAR, &status);
     }
 
     for (int row = 0; row < _size[0]; ++row)
@@ -885,16 +874,16 @@ int main(int argc, char ** argv)
     uint_t iter;
     uint_t size;
     double thresh;
-    double prob;
+    double frac;
     double empty;
 
     sscanf(argv[1], "%u", &iter); 
     sscanf(argv[2], "%u", &size); 
     sscanf(argv[3], "%lf", &thresh); 
-    sscanf(argv[4], "%lf", &prob); 
+    sscanf(argv[4], "%lf", &frac); 
     sscanf(argv[5], "%lf", &empty); 
 
-    City city(size, thresh, prob, empty);
+    City city(size, thresh, frac, empty);
     city.Iterate(iter);
 
     MPI_Finalize();

@@ -1,3 +1,18 @@
+#ifndef SCHELLING_H
+#define SCHELLING_H
+
+/*******************************************************************************
+ 
+    PARALLEL SCHELLING MODEL CELLULAR AUTOMATON
+
+********************************************************************************
+
+  * Compile with: 'mpicxx -std=c++11 schelling.cpp -o schelling.out'
+  * Run with: 'mpirun -n <proc> ./schelling.out \
+        <iter> <size> <thresh> <frac> <empty>'
+
+*******************************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,6 +20,9 @@
 #include <random>
 #include <inttypes.h>
 
+////////////////////////////////////////////////////////////////////////////////
+//  Type definitions
+////////////////////////////////////////////////////////////////////////////////
 typedef unsigned int uint_t;
 
 typedef std::default_random_engine randgen_t;
@@ -161,3 +179,5 @@ class City
         void CheckState(const uint_t iteration);
         void Iterate(const uint_t iterations);
 };
+
+#endif // SCHELLING_H

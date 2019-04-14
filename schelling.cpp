@@ -58,14 +58,8 @@ inline const int & absmin(
     const uint_t sign, const int & first, const int & second
 )
 {
-    if (sign)
-    {
-        return (first < second)? first: second;
-    }
-    else
-    {
-        return (first < second)? second: first;
-    }
+    if (sign) { return (first < second)? first: second; }
+    else { return (first < second)? second: first; }
 }
 
 // swap
@@ -127,6 +121,7 @@ inline uint_t City::GetFullIndex(const int row, const int col) const
     return (row + _border[0]) * _size[1] + col;
 }
 
+// not used in current version
 inline uint8_t City::GetVicinitySize(const int row, const int col) const
 { 
     uint8_t r = (row > 0 || _border[0]) + (row < _size[0] - 1 || _border[1]);
@@ -202,10 +197,7 @@ void City::GetState(uint_t * weights)
 {
     memset(weights, 0, 3 * sizeof(uint_t));
 
-    for (int s = 0; s < _size[0] * _size[1]; ++s)
-    {
-        AssessHouse(s, weights);
-    }
+    for (int s = 0; s < _size[0] * _size[1]; ++s) { AssessHouse(s, weights); }
 
     return;
 }
@@ -252,8 +244,10 @@ City::City(
     MPI_Comm_rank(MPI_COMM_WORLD, &_prank);
     MPI_Comm_size(MPI_COMM_WORLD, &_psize);
 
+    // set height of the map
     _size[0] = _size[1] / _psize + (_prank < _size[1] % _psize);
 
+    // set offset for output
     if (_prank)
     {
         _offset
@@ -262,7 +256,7 @@ City::City(
             ) * 2 * _size[1];
     }
 
-    // if process has any data
+    // set borders if process has any data
     if (_size[0])
     {
         _border[0] = (_prank > 0);
@@ -290,7 +284,7 @@ City::City(
     // shuffle houses
     Shuffle(_generator, _size[0] * _size[1], GetFirstRow()); 
 
-    // only on root
+    // aggregated info (only on root)
     if (_psize > 1 && !_prank)
     {
         _partrank = (uint_t *)malloc(_psize * sizeof(uint_t));
@@ -304,30 +298,11 @@ City::City(
 
 City::~City(void)
 {
-    if (_houses)
-    {
-        free(_houses);
-    }
-
-    if (_moving)
-    {
-        free(_moving);
-    }
-
-    if (_partrank)
-    {
-        free(_partrank);
-    }
-
-    if (_partstate)
-    {
-        free(_partstate);
-    }
-
-    if (_buffer)
-    {
-        free(_buffer);
-    }
+    if (_houses) { free(_houses); }
+    if (_moving) { free(_moving); }
+    if (_partrank) { free(_partrank); }
+    if (_partstate) { free(_partstate); }
+    if (_buffer) { free(_buffer); }
 
     return;
 }
@@ -387,18 +362,19 @@ void City::FindMoving(void)
 {
     uint8_t vicstate[4];
 
+    // reset local state
     memset(_locstate, 0, 4 * sizeof(uint_t));
 
     for (int row = 0; row < _size[0]; ++row)
     {
         for (int col = 0; col < _size[1]; ++col)
         {
+            // assess vicinity state for next house
             memset(vicstate, 0, 4);
 
             if (row || _border[0])
             {
                 AssessHouse(row - 1, col, vicstate);
-
                 if (col) { AssessHouse(row - 1, col - 1, vicstate); }
 
                 if (col < _size[1] - 1)
@@ -410,7 +386,6 @@ void City::FindMoving(void)
             if (row < _size[0] - 1 || _border[1])
             {
                 AssessHouse(row + 1, col, vicstate);
-
                 if (col) { AssessHouse(row + 1, col - 1, vicstate); }
 
                 if (col < _size[1] - 1)
@@ -420,7 +395,6 @@ void City::FindMoving(void)
             }
 
             if (col) { AssessHouse(row, col - 1, vicstate); }
-
             if (col < _size[1] - 1) { AssessHouse(row, col + 1, vicstate); }
 
             if (Decise(row, col, vicstate))
@@ -436,7 +410,8 @@ void City::FindMoving(void)
     return;
 }
 
-// generate random state with precalculated probability 
+// generate random state with precalculated probability
+// using multinomial distribution
 void City::GuessState(void)
 {
     ddist_t distribution{
@@ -548,6 +523,7 @@ void City::Equilibrate(void)
     int state[3];
 
     _partrank[0] = 0;
+
     // state = _partsize
     state[0] = _partstate[0];
     state[1] = _partstate[1];
@@ -562,12 +538,12 @@ void City::Equilibrate(void)
         state[2] += _partstate[3 * p + 2];
     }
 
+    // shuffle ranks
+    Shuffle(_generator, _psize, _partrank);
+
     state[0] -= _totstate[0];
     state[1] -= _totstate[1];
     state[2] -= _totstate[2];
-
-    // shuffle ranks
-    Shuffle(_generator, _psize, _partrank);
 
     // detect not matching components of precalculated total state  
     uint8_t inds[3];
@@ -580,14 +556,14 @@ void City::Equilibrate(void)
     {
         int sign = (discrepancy != DISCR_NNP);
 
-        int first;
+        int first; // random of 0 or 1
         int second = 2;
         ddist_t pos{1, 1}; // 0 and 1 with equal probability
 
-        uint_t ch;
+        uint_t ch; // random of 0, 1 or 2
         udist_t chunk(1, 3);
 
-        uint_t p;
+        uint_t p; // random
         udist_t proc(0, _psize - 1);
 
         if (discrepancy == DISCR_PNZ)
@@ -690,22 +666,11 @@ void City::Redistribute(void)
     int u = 0;
 
     // night watch
-    for ( ; u < _locstate[0]; ++u)
-    {
-        _houses[_moving[u]] = 0;
-    }
-
+    for ( ; u < _locstate[0]; ++u) { _houses[_moving[u]] = 0; }
     // wasteland
-    for ( ; u < _locstate[0] + _locstate[1]; ++u)
-    {
-        _houses[_moving[u]] = 1;
-    }
-
+    for ( ; u < _locstate[0] + _locstate[1]; ++u) { _houses[_moving[u]] = 1; }
     // white walkers
-    for ( ; u < _locstate[3]; ++u)
-    {
-        _houses[_moving[u]] = 2;
-    }
+    for ( ; u < _locstate[3]; ++u) { _houses[_moving[u]] = 2; }
 
     // shuffle moving houses
     Shuffle(_generator, _locstate[3], _moving, _houses);
@@ -801,7 +766,7 @@ void City::ParallelFileDump(const uint_t iteration)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-//  Iterate
+//  Iteration process 
 ////////////////////////////////////////////////////////////////////////////////
 void City::Iterate(const uint_t iterations)
 {
